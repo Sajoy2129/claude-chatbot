@@ -1,9 +1,18 @@
-"""A terminal chatbot that remembers the conversation. Type 'quit' to exit."""
+"""A terminal chatbot that remembers the conversation. Type 'quit' to exit.
+
+Each chat is saved to chats/. Run with --continue to pick up the latest one.
+"""
+
+import argparse
+import json
+from datetime import datetime
+from pathlib import Path
 
 import anthropic
 from dotenv import load_dotenv
 
 MODEL = "claude-opus-5-5"
+CHATS_DIR = Path(__file__).parent / "chats"
 SYSTEM_PROMPT = """\
 You are a patient tutor helping a beginner learn Python and AI engineering.
 
@@ -37,10 +46,57 @@ def usage_summary(response):
     return f"[tokens: {usage.input_tokens} in, {usage.output_tokens} out]"
 
 
+def new_chat_path(chats_dir):
+    """Return a fresh file path named after the current date and time."""
+    return chats_dir / f"chat-{datetime.now():%Y-%m-%d_%H-%M-%S}.json"
+
+
+def latest_chat_path(chats_dir):
+    """Return the most recent saved chat, or None if there aren't any."""
+    # The timestamp in each name sorts oldest to newest, so the last is newest.
+    chats = sorted(chats_dir.glob("chat-*.json"))
+    return chats[-1] if chats else None
+
+
+def save_history(path, history):
+    """Write the conversation to a JSON file."""
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(json.dumps(history, indent=2))
+
+
+def load_history(path):
+    """Read a conversation back from a JSON file."""
+    return json.loads(path.read_text())
+
+
+def pick_chat(continue_chat):
+    """Return (path, history) for the latest chat, or for a new one."""
+    if continue_chat:
+        path = latest_chat_path(CHATS_DIR)
+        if path:
+            history = load_history(path)
+            print(f"Continuing {path.name} ({len(history)} messages)\n")
+            return path, history
+        print("No saved chats yet, so starting a new one.\n")
+    return new_chat_path(CHATS_DIR), []
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Chat with Claude.")
+    parser.add_argument(
+        "--continue",
+        dest="continue_chat",  # "continue" is a Python keyword, so rename it
+        action="store_true",
+        help="pick up the most recent saved chat",
+    )
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
     load_dotenv()
     client = anthropic.Anthropic()
-    history = []  # every message so far, oldest first
+    chat_path, history = pick_chat(args.continue_chat)
 
     print("Chat with Claude! Type 'quit' to exit.\n")
 
@@ -66,8 +122,11 @@ def main():
             continue
 
         # Save Claude's full reply (not just the text) so the next request
-        # sends the conversation back exactly as Claude wrote it.
-        history.append({"role": "assistant", "content": response.content})
+        # sends the conversation back exactly as Claude wrote it. to_dict()
+        # turns each SDK block into a plain dict that JSON can store.
+        content = [block.to_dict() for block in response.content]
+        history.append({"role": "assistant", "content": content})
+        save_history(chat_path, history)
         print(f"{usage_summary(response)}\n")
 
     print("\nGoodbye!")
