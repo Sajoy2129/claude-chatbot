@@ -32,6 +32,12 @@ def reply_text(response):
     return "".join(block.text for block in response.content if block.type == "text")
 
 
+def usage_summary(response):
+    """Describe how many tokens this request used."""
+    usage = response.usage
+    return f"[tokens: {usage.input_tokens} in, {usage.output_tokens} out]"
+
+
 def main():
     load_dotenv()
     client = anthropic.Anthropic()
@@ -61,7 +67,8 @@ def main():
         # Save Claude's full reply (not just the text) so the next request
         # sends the conversation back exactly as Claude wrote it.
         history.append({"role": "assistant", "content": response.content})
-        print(f"Claude: {reply_text(response)}\n")
+        print(f"Claude: {reply_text(response)}")
+        print(f"{usage_summary(response)}\n")
 
     print("\nGoodbye!")
 
