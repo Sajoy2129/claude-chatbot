@@ -1,6 +1,10 @@
 """A terminal chatbot that remembers the conversation. Type 'quit' to exit.
 
 Each chat is saved to chats/. Run with --continue to pick up the latest one.
+
+Commands (handled here, never sent to Claude):
+  /reset   start a fresh conversation
+  /system  set a new system prompt and start a fresh conversation
 """
 
 import argparse
@@ -23,13 +27,13 @@ You are a patient tutor helping a beginner learn Python and AI engineering.
 """
 
 
-def stream_reply(client, history):
+def stream_reply(client, system_prompt, history):
     """Send the conversation to Claude, print the reply as it arrives,
     and return the complete response once it's finished."""
     with client.beta.messages.stream(
         model=MODEL,
         max_tokens=4096,
-        system=SYSTEM_PROMPT,
+        system=system_prompt,
         messages=history,
         # If Claude declines for safety reasons, retry on a fallback model.
         betas=["server-side-fallback-2026-07-01"],
@@ -58,27 +62,41 @@ def latest_chat_path(chats_dir):
     return chats[-1] if chats else None
 
 
-def save_history(path, history):
-    """Write the conversation to a JSON file."""
+def save_chat(path, system_prompt, history):
+    """Write the system prompt and conversation to a JSON file."""
     path.parent.mkdir(exist_ok=True)
-    path.write_text(json.dumps(history, indent=2))
+    chat = {"system": system_prompt, "messages": history}
+    path.write_text(json.dumps(chat, indent=2))
 
 
-def load_history(path):
-    """Read a conversation back from a JSON file."""
-    return json.loads(path.read_text())
+def load_chat(path):
+    """Read a chat back from a JSON file. Returns (system_prompt, history)."""
+    chat = json.loads(path.read_text())
+    if isinstance(chat, list):  # older files stored only the messages
+        return SYSTEM_PROMPT, chat
+    return chat["system"], chat["messages"]
 
 
 def pick_chat(continue_chat):
-    """Return (path, history) for the latest chat, or for a new one."""
+    """Return (path, system_prompt, history) for the latest chat, or a new one."""
     if continue_chat:
         path = latest_chat_path(CHATS_DIR)
         if path:
-            history = load_history(path)
+            system_prompt, history = load_chat(path)
             print(f"Continuing {path.name} ({len(history)} messages)\n")
-            return path, history
+            return path, system_prompt, history
         print("No saved chats yet, so starting a new one.\n")
-    return new_chat_path(CHATS_DIR), []
+    return new_chat_path(CHATS_DIR), SYSTEM_PROMPT, []
+
+
+def ask_for_system_prompt():
+    """Ask the user for a new system prompt. Returns None if left blank."""
+    print("Type the new system prompt (or press Enter to cancel):")
+    try:
+        new_prompt = input("System: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return None
+    return new_prompt or None
 
 
 def parse_args():
@@ -96,9 +114,9 @@ def main():
     args = parse_args()
     load_dotenv()
     client = anthropic.Anthropic()
-    chat_path, history = pick_chat(args.continue_chat)
+    chat_path, system_prompt, history = pick_chat(args.continue_chat)
 
-    print("Chat with Claude! Type 'quit' to exit.\n")
+    print("Chat with Claude! Commands: /reset, /system. Type 'quit' to exit.\n")
 
     while True:
         try:
@@ -106,14 +124,31 @@ def main():
         except (EOFError, KeyboardInterrupt):  # Ctrl+D or Ctrl+C
             break
 
-        if user_input.lower() == "quit":
+        command = user_input.lower()
+        if command == "quit":
             break
         if not user_input:
             continue  # ignore empty lines
 
+        # Commands are handled here and skip the API call below.
+        if command == "/reset":
+            # A new file keeps the old chat saved instead of overwriting it.
+            chat_path, history = new_chat_path(CHATS_DIR), []
+            print("(Started a fresh conversation.)\n")
+            continue
+        if command == "/system":
+            new_prompt = ask_for_system_prompt()
+            if new_prompt is None:
+                print("(System prompt unchanged.)\n")
+                continue
+            system_prompt = new_prompt
+            chat_path, history = new_chat_path(CHATS_DIR), []
+            print("(New system prompt set. Started a fresh conversation.)\n")
+            continue
+
         history.append({"role": "user", "content": user_input})
         print("Claude: ", end="", flush=True)
-        response = stream_reply(client, history)
+        response = stream_reply(client, system_prompt, history)
         print()  # end the streamed line
 
         if response.stop_reason == "refusal":
@@ -126,7 +161,7 @@ def main():
         # turns each SDK block into a plain dict that JSON can store.
         content = [block.to_dict() for block in response.content]
         history.append({"role": "assistant", "content": content})
-        save_history(chat_path, history)
+        save_chat(chat_path, system_prompt, history)
         print(f"{usage_summary(response)}\n")
 
     print("\nGoodbye!")
