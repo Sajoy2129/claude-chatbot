@@ -14,22 +14,21 @@ You are a patient tutor helping a beginner learn Python and AI engineering.
 """
 
 
-def ask_claude(client, history):
-    """Send the full conversation history to Claude and return the response."""
-    return client.beta.messages.create(
+def stream_reply(client, history):
+    """Send the conversation to Claude, print the reply as it arrives,
+    and return the complete response once it's finished."""
+    with client.beta.messages.stream(
         model=MODEL,
         max_tokens=4096,
         system=SYSTEM_PROMPT,
         messages=history,
-        # If Claude declines for safety reasons, retry on a fallback model.he
+        # If Claude declines for safety reasons, retry on a fallback model.
         betas=["server-side-fallback-2026-07-01"],
         fallbacks="default",
-    )
-
-
-def reply_text(response):
-    """Join the text blocks of a response into one string."""
-    return "".join(block.text for block in response.content if block.type == "text")
+    ) as stream:
+        for text in stream.text_stream:
+            print(text, end="", flush=True)  # flush = show it right away
+        return stream.get_final_message()
 
 
 def usage_summary(response):
@@ -57,17 +56,18 @@ def main():
             continue  # ignore empty lines
 
         history.append({"role": "user", "content": user_input})
-        response = ask_claude(client, history)
+        print("Claude: ", end="", flush=True)
+        response = stream_reply(client, history)
+        print()  # end the streamed line
 
         if response.stop_reason == "refusal":
             history.pop()  # drop the declined message so the chat can go on
-            print("Claude: (declined to answer that one)\n")
+            print("(Claude declined to answer that one)\n")
             continue
 
         # Save Claude's full reply (not just the text) so the next request
         # sends the conversation back exactly as Claude wrote it.
         history.append({"role": "assistant", "content": response.content})
-        print(f"Claude: {reply_text(response)}")
         print(f"{usage_summary(response)}\n")
 
     print("\nGoodbye!")
